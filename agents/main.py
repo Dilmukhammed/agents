@@ -25,7 +25,7 @@ class LLM:
         self.model_params = {k: v for k, v in self.model_params.items() if v is not None}
 
     async def _generate_and_parse_json(self, user_prompt: str, response_model: Type[BaseModel]) -> BaseModel:
-        # Instruct the model to produce JSON. This is a common technique.
+        # Instruct the model to produce JSON by including the schema in the prompt.
         prompt_with_json_instructions = f"""{user_prompt}
 
 Your response MUST be a single JSON object that conforms to the following Pydantic schema:
@@ -44,19 +44,16 @@ Your response MUST be a single JSON object that conforms to the following Pydant
             )
 
             json_text = response.choices[0].message.content
-            # Manually parse the JSON string into the Pydantic model
             return response_model.model_validate_json(json_text)
 
         except (json.JSONDecodeError, ValidationError) as e:
-            # Fallback for parsing or validation failure
             if response_model == PlanResponse:
                 return PlanResponse(status="failure", reason=f"JSON parsing/validation error: {e}", missing_capabilities=[], questions_for_user=["The model returned an invalid JSON structure. Please try again."])
             elif response_model == DebateResponse:
-                return DebateResponse(move="debate", commentary=None, final_plan=None) # Fail gracefully
+                return DebateResponse(move="debate", commentary=None, final_plan=None)
             else:
-                raise e # Or handle as needed
+                raise e
         except Exception as e:
-            # Fallback for API call failure
             if response_model == PlanResponse:
                 return PlanResponse(status="failure", reason=f"API Error: {e}", missing_capabilities=[], questions_for_user=[])
             elif response_model == DebateResponse:
@@ -156,9 +153,7 @@ async def stage_2_debate(models: List[LLM], initial_discussion: str):
                     models_to_remove.append(model)
                     print(f"Model {model.model_id} has submitted a final plan and exited the debate.")
 
-            # Update history for the next round with all moves from the current round
             debate_history += current_round_moves
-
             active_models = [m for m in active_models if m not in models_to_remove]
             round_num += 1
 
