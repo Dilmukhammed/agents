@@ -1,9 +1,9 @@
 import asyncio
 import os
 import json
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Type
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from schemas import PlanResponse, DebateResponse, FinalPlan
 
@@ -16,38 +16,53 @@ class LLM:
             api_key=provider_config['api_key'],
             base_url=provider_config.get('base_url')
         )
-        # Store model-specific parameters
         self.model_params = {
             "model": model_config['model_name'],
             "temperature": model_config.get('temperature'),
             "top_p": model_config.get('top_p'),
-            "max_tokens": model_config.get('max_tokens'),
+            "max_tokens": model_config.get('max_tokens', 4096), # Default max_tokens
         }
-        # Filter out None values
         self.model_params = {k: v for k, v in self.model_params.items() if v is not None}
 
-    async def _generate_structured(self, user_prompt: str, response_model: BaseModel) -> BaseModel:
+    async def _generate_and_parse_json(self, user_prompt: str, response_model: Type[BaseModel]) -> BaseModel:
+        # Instruct the model to produce JSON. This is a common technique.
+        prompt_with_json_instructions = f"""{user_prompt}
+
+Your response MUST be a single JSON object that conforms to the following Pydantic schema:
+```json
+{response_model.model_json_schema()}
+```
+"""
         try:
-            # This assumes a client patched with a library like 'instructor'
-            completion = await self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 **self.model_params,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": prompt_with_json_instructions},
                 ],
-                response_model=response_model,
+                response_format={"type": "json_object"}, # Use JSON mode
             )
-            return completion
+
+            json_text = response.choices[0].message.content
+            # Manually parse the JSON string into the Pydantic model
+            return response_model.model_validate_json(json_text)
+
+        except (json.JSONDecodeError, ValidationError) as e:
+            # Fallback for parsing or validation failure
+            if response_model == PlanResponse:
+                return PlanResponse(status="failure", reason=f"JSON parsing/validation error: {e}", missing_capabilities=[], questions_for_user=["The model returned an invalid JSON structure. Please try again."])
+            elif response_model == DebateResponse:
+                return DebateResponse(move="debate", commentary=None, final_plan=None) # Fail gracefully
+            else:
+                raise e # Or handle as needed
         except Exception as e:
-            # Fallback for structured generation failure
+            # Fallback for API call failure
             if response_model == PlanResponse:
                 return PlanResponse(status="failure", reason=f"API Error: {e}", missing_capabilities=[], questions_for_user=[])
             elif response_model == DebateResponse:
-                # If debate fails, just submit a null move to avoid crashing the loop
                 return DebateResponse(move="debate", commentary=None, final_plan=None)
             else:
                 raise e
-
 
     async def _generate_text(self, user_prompt: str) -> str:
         try:
@@ -64,7 +79,7 @@ class LLM:
 
     async def generate_plan(self, user_request: str) -> PlanResponse:
         prompt = f"Generate a plan for this request: {user_request}. Available agents: AgentNameFromList, AnotherAgentFromList."
-        return await self._generate_structured(prompt, response_model=PlanResponse)
+        return await self._generate_and_parse_json(prompt, response_model=PlanResponse)
 
     async def debate(self, history: str) -> DebateResponse:
         prompt = f"""You are in a debate with other AI models. Your goal is to collaboratively produce the best possible plan.
@@ -74,9 +89,8 @@ The debate history so far:
 
 Review the history, attack weak plans, defend your own, and concede good points.
 If you believe your plan is now the best, you can submit it as final.
-Your response MUST be a JSON object matching the required schema.
 """
-        return await self._generate_structured(prompt, response_model=DebateResponse)
+        return await self._generate_and_parse_json(prompt, response_model=DebateResponse)
 
     async def generate_final_plan(self, submitted_plans: str) -> str:
         prompt = f"""Multiple AI models have submitted their final plans after a debate. Your task is to act as the ultimate judge.
@@ -120,33 +134,36 @@ async def stage_2_debate(models: List[LLM], initial_discussion: str):
 
     with open("all_plans.txt", "a", encoding="utf-8") as f:
         while len(active_models) > 1:
-            f.write(f"\n--- Stage 2: Debate Round {round_num} ---\n\n")
+            round_header = f"\n--- Stage 2: Debate Round {round_num} ---\n\n"
+            f.write(round_header)
             print(f"--- Stage 2: Debate Round {round_num} | Active Models: {len(active_models)} ---")
 
             tasks = [model.debate(debate_history) for model in active_models]
             responses = await asyncio.gather(*tasks)
 
-            next_round_history = ""
+            current_round_moves = ""
             models_to_remove = []
 
             for i, response in enumerate(responses):
                 model = active_models[i]
                 response_json = response.model_dump_json(indent=2)
-                f.write(f"--- Move from {model.model_id} ---\n{response_json}\n\n")
+                move_text = f"--- Move from {model.model_id} ---\n{response_json}\n\n"
+                f.write(move_text)
+                current_round_moves += move_text
 
                 if response.move == "submit_final_plan" and response.final_plan:
                     submitted_final_plans.append(response.final_plan)
                     models_to_remove.append(model)
                     print(f"Model {model.model_id} has submitted a final plan and exited the debate.")
-                elif response.move == "debate":
-                    next_round_history += f"--- Move from {model.model_id} ---\n{response_json}\n\n"
+
+            # Update history for the next round with all moves from the current round
+            debate_history += current_round_moves
 
             active_models = [m for m in active_models if m not in models_to_remove]
-            debate_history += next_round_history
             round_num += 1
 
-            if not next_round_history.strip():
-                print("Debate stalled. No new comments. Ending debate.")
+            if not any(res.move == "debate" for res in responses):
+                print("Debate stalled. No new 'debate' moves. Ending debate.")
                 break
 
     print(f"Debate finished. {len(submitted_final_plans)} final plans were submitted.")
@@ -173,7 +190,8 @@ async def stage_3_generate_final_plan(final_model: LLM, submitted_plans: List[Fi
         f.write(final_plan_text)
 
 async def main():
-    config, providers = load_config(), config['providers']
+    config = load_config()
+    providers = config['providers']
     user_request = "Составь план для завоевания мира."
 
     s1_prompts = load_system_prompts('system_prompts/stage_1_prompts.txt')
@@ -198,5 +216,5 @@ async def main():
 
 if __name__ == "__main__":
     print("Запуск основного скрипта. Убедитесь, что вы указали правильные API ключи в config.json")
-    print("Выполнение закомментировано. Для реального использования может потребоваться 'instructor' или аналогичная библиотека.")
     # asyncio.run(main())
+    print("Выполнение закомментировано. Раскомментируйте для реального использования.")
