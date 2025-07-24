@@ -25,7 +25,6 @@ class LLM:
         self.model_params = {k: v for k, v in self.model_params.items() if v is not None}
 
     async def _generate_and_parse_json(self, user_prompt: str, response_model: Type[BaseModel]) -> BaseModel:
-        # Instruct the model to produce JSON by including the schema in the prompt.
         prompt_with_json_instructions = f"""{user_prompt}
 
 Your response MUST be a single JSON object that conforms to the following Pydantic schema:
@@ -40,7 +39,7 @@ Your response MUST be a single JSON object that conforms to the following Pydant
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt_with_json_instructions},
                 ],
-                response_format={"type": "json_object"}, # Use JSON mode
+                response_format={"type": "json_object"},
             )
 
             json_text = response.choices[0].message.content
@@ -61,19 +60,6 @@ Your response MUST be a single JSON object that conforms to the following Pydant
             else:
                 raise e
 
-    async def _generate_text(self, user_prompt: str) -> str:
-        try:
-            response = await self.client.chat.completions.create(
-                 **self.model_params,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            return f"Error from {self.model_id}: {e}"
-
     async def generate_plan(self, user_request: str) -> PlanResponse:
         prompt = f"Generate a plan for this request: {user_request}. Available agents: AgentNameFromList, AnotherAgentFromList."
         return await self._generate_and_parse_json(prompt, response_model=PlanResponse)
@@ -89,14 +75,16 @@ If you believe your plan is now the best, you can submit it as final.
 """
         return await self._generate_and_parse_json(prompt, response_model=DebateResponse)
 
-    async def generate_final_plan(self, submitted_plans: str) -> str:
-        prompt = f"""Multiple AI models have submitted their final plans after a debate. Your task is to act as the ultimate judge.
-Review all the submitted final plans below, synthesize the best ideas from them, and create one, single, consolidated master plan.
+    async def generate_final_plan(self, submitted_plans: List[FinalPlan]) -> PlanResponse:
+        submitted_plans_json = [plan.model_dump() for plan in submitted_plans]
+        prompt = f"""You are the final judge. Multiple AI models have submitted their final plans after a debate.
+Your task is to synthesize the best ideas from all of them and create one, single, consolidated master plan.
+The submitted plans are in the following JSON array:
+{json.dumps(submitted_plans_json, indent=2)}
 
-{submitted_plans}
-
-The final output should be a clear, coherent, and actionable plan in text format."""
-        return await self._generate_text(prompt)
+Your final output must be a single, coherent, and actionable plan in the standard PlanResponse JSON format.
+"""
+        return await self._generate_and_parse_json(prompt, response_model=PlanResponse)
 
 
 def load_system_prompts(file_path: str) -> Union[str, List[str]]:
@@ -164,25 +152,22 @@ async def stage_2_debate(models: List[LLM], initial_discussion: str):
     print(f"Debate finished. {len(submitted_final_plans)} final plans were submitted.")
     return submitted_final_plans
 
-
 async def stage_3_generate_final_plan(final_model: LLM, submitted_plans: List[FinalPlan]):
     if not submitted_plans:
         print("No final plans were submitted. Skipping final consolidation.")
         with open("final_plan.txt", "w", encoding="utf-8") as f:
-            f.write("No final plan could be generated as no models submitted a final version during the debate.")
+            f.write(json.dumps({"status": "failure", "reason": "No final plans were submitted during the debate."}, indent=2))
         return
 
-    submitted_plans_text = ""
     with open("all_plans.txt", "a", encoding="utf-8") as f:
         f.write("\n--- Stage 3: Submitted Final Plans for Consolidation ---\n\n")
         for i, plan in enumerate(submitted_plans):
             plan_text = plan.model_dump_json(indent=2)
-            submitted_plans_text += f"--- Submitted Plan {i+1} ---\n{plan_text}\n\n"
-        f.write(submitted_plans_text)
+            f.write(f"--- Submitted Plan {i+1} ---\n{plan_text}\n\n")
 
-    final_plan_text = await final_model.generate_final_plan(submitted_plans_text)
+    final_plan = await final_model.generate_final_plan(submitted_plans)
     with open("final_plan.txt", "w", encoding="utf-8") as f:
-        f.write(final_plan_text)
+        f.write(final_plan.model_dump_json(indent=2))
 
 async def main():
     config = load_config()
