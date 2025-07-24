@@ -12,6 +12,8 @@ class LLM:
         self.system_prompt = system_prompt
         self.temperature = model_config.get('temperature')
         self.top_p = model_config.get('top_p')
+        self.max_tokens = model_config.get('max_tokens')
+        self.reasoning_effort = model_config.get('reasoning_effort')
         self.client = AsyncOpenAI(
             api_key=provider_config['api_key'],
             base_url=provider_config.get('base_url')
@@ -30,6 +32,10 @@ class LLM:
                 params["temperature"] = self.temperature
             if self.top_p is not None:
                 params["top_p"] = self.top_p
+            if self.max_tokens is not None:
+                params["max_tokens"] = self.max_tokens
+            if self.reasoning_effort is not None:
+                params["reasoning_effort"] = self.reasoning_effort
 
             response = await self.client.chat.completions.create(**params)
             return response.choices[0].message.content
