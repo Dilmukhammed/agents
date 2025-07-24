@@ -1,7 +1,7 @@
 import asyncio
 import os
 import json
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 from openai import AsyncOpenAI
 
 # A real LLM class using openai SDK
@@ -10,6 +10,8 @@ class LLM:
         self.model_name = model_config['model_name']
         self.provider_name = model_config['provider']
         self.system_prompt = system_prompt
+        self.temperature = model_config.get('temperature')
+        self.top_p = model_config.get('top_p')
         self.client = AsyncOpenAI(
             api_key=provider_config['api_key'],
             base_url=provider_config.get('base_url')
@@ -17,13 +19,19 @@ class LLM:
 
     async def _generate(self, user_prompt: str) -> str:
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
+            params = {
+                "model": self.model_name,
+                "messages": [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            if self.temperature is not None:
+                params["temperature"] = self.temperature
+            if self.top_p is not None:
+                params["top_p"] = self.top_p
+
+            response = await self.client.chat.completions.create(**params)
             return response.choices[0].message.content
         except Exception as e:
             return f"Error from {self.provider_name} ({self.model_name}): {e}"
