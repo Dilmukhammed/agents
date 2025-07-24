@@ -1,0 +1,27 @@
+{
+    "providers": {
+        "openai": {
+            "api_key": "YOUR_OPENAI_API_KEY",
+            "base_url": null
+        },
+        "another_provider": {
+            "api_key": "YOUR_OTHER_API_KEY",
+            "base_url": "https://api.otherprovider.com/v1"
+        }
+    },
+    "stage_1_models": [
+        {"provider": "openai", "model_name": "gpt-4"},
+        {"provider": "openai", "model_name": "gpt-3.5-turbo"},
+        {"provider": "another_provider", "model_name": "claude-2"},
+        {"provider": "openai", "model_name": "gpt-4"},
+        {"provider": "openai", "model_name": "gpt-3.5-turbo"}
+    ],
+    "stage_2_models": [
+        {"provider": "openai", "model_name": "gpt-4"},
+        {"provider": "openai", "model_name": "gpt-3.5-turbo"},
+        {"provider": "another_provider", "model_name": "claude-2"},
+        {"provider": "openai", "model_name": "gpt-4"},
+        {"provider": "openai", "model_name": "gpt-3.5-turbo"}
+    ],
+    "stage_3_model": {"provider": "openai", "model_name": "gpt-4"}
+}
