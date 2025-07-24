@@ -5,7 +5,7 @@ from typing import List, Dict, Union, Type
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
-from schemas import PlanResponse, DebateResponse, FinalPlan
+from .schemas import PlanResponse, DebateResponse, FinalPlan
 
 # A real LLM class using openai SDK
 class LLM:
