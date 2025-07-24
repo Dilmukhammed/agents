@@ -20,12 +20,14 @@ class LLM:
             "model": model_config['model_name'],
             "temperature": model_config.get('temperature'),
             "top_p": model_config.get('top_p'),
-            "max_tokens": model_config.get('max_tokens', 4096), # Default max_tokens
+            "max_tokens": model_config.get('max_tokens', 4096),
         }
         self.model_params = {k: v for k, v in self.model_params.items() if v is not None}
 
-    async def _generate_and_parse_json(self, user_prompt: str, response_model: Type[BaseModel]) -> BaseModel:
-        prompt_with_json_instructions = f"""{user_prompt}
+    async def _generate_and_parse_json(self, messages: List[Dict[str, str]], response_model: Type[BaseModel]) -> BaseModel:
+        # Add the JSON schema instruction to the last user message
+        last_user_message = messages[-1]['content']
+        messages[-1]['content'] = f"""{last_user_message}
 
 Your response MUST be a single JSON object that conforms to the following Pydantic schema:
 ```json
@@ -35,10 +37,7 @@ Your response MUST be a single JSON object that conforms to the following Pydant
         try:
             response = await self.client.chat.completions.create(
                 **self.model_params,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": prompt_with_json_instructions},
-                ],
+                messages=messages,
                 response_format={"type": "json_object"},
             )
 
@@ -46,6 +45,7 @@ Your response MUST be a single JSON object that conforms to the following Pydant
             return response_model.model_validate_json(json_text)
 
         except (json.JSONDecodeError, ValidationError) as e:
+            # Fallback handling
             if response_model == PlanResponse:
                 return PlanResponse(status="failure", reason=f"JSON parsing/validation error: {e}", missing_capabilities=[], questions_for_user=["The model returned an invalid JSON structure. Please try again."])
             elif response_model == DebateResponse:
@@ -61,30 +61,40 @@ Your response MUST be a single JSON object that conforms to the following Pydant
                 raise e
 
     async def generate_plan(self, user_request: str) -> PlanResponse:
-        prompt = f"Generate a plan for this request: {user_request}. Available agents: AgentNameFromList, AnotherAgentFromList."
-        return await self._generate_and_parse_json(prompt, response_model=PlanResponse)
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": f"Generate a plan for this request: {user_request}. Available agents: AgentNameFromList, AnotherAgentFromList."}
+        ]
+        return await self._generate_and_parse_json(messages, response_model=PlanResponse)
 
     async def debate(self, history: str) -> DebateResponse:
-        prompt = f"""You are in a debate with other AI models. Your goal is to collaboratively produce the best possible plan.
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": f"""You are in a debate with other AI models. Your goal is to collaboratively produce the best possible plan.
 Your ID is: {self.model_id}.
 The debate history so far:
 {history}
 
 Review the history, attack weak plans, defend your own, and concede good points.
 If you believe your plan is now the best, you can submit it as final.
-"""
-        return await self._generate_and_parse_json(prompt, response_model=DebateResponse)
+"""}
+        ]
+        return await self._generate_and_parse_json(messages, response_model=DebateResponse)
 
     async def generate_final_plan(self, submitted_plans: List[FinalPlan]) -> PlanResponse:
         submitted_plans_json = [plan.model_dump() for plan in submitted_plans]
-        prompt = f"""You are the final judge. Multiple AI models have submitted their final plans after a debate.
+        user_content = f"""You are the final judge. Multiple AI models have submitted their final plans after a debate.
 Your task is to synthesize the best ideas from all of them and create one, single, consolidated master plan.
 The submitted plans are in the following JSON array:
 {json.dumps(submitted_plans_json, indent=2)}
 
 Your final output must be a single, coherent, and actionable plan in the standard PlanResponse JSON format.
 """
-        return await self._generate_and_parse_json(prompt, response_model=PlanResponse)
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        return await self._generate_and_parse_json(messages, response_model=PlanResponse)
 
 
 def load_system_prompts(file_path: str) -> Union[str, List[str]]:
