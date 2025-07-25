@@ -3,16 +3,22 @@ from typing import List, Optional, Literal
 
 # --- Stage 1: Initial Plan Schemas ---
 
-class Step(BaseModel):
+class ToolCall(BaseModel):
+    mcp_server: str = Field(..., description="The MCP server to route the tool call to.")
+    tool_name: str = Field(..., description="The name of the tool to be called.")
+    parameters: dict = Field(..., description="The parameters for the tool call.")
+
+class Task(BaseModel):
     step_id: str = Field(..., description="A unique identifier for the step, e.g., '1.1'.")
     task_description: str = Field(..., description="A very specific action for the agent to perform.")
     assigned_agent: str = Field(..., description="The name of the agent assigned to this task.")
+    tool_call: ToolCall = Field(..., description="The tool call to be executed for this task.")
     expected_output: str = Field(..., description="A clear description of the data/artifact this step will produce.")
     dependencies: List[str] = Field(..., description="A list of step_ids that this step depends on.")
 
 class Phase(BaseModel):
     phase_name: str = Field(..., description="The name of the phase, e.g., 'Research and Content Strategy'.")
-    steps: List[Step]
+    steps: List[Task]
 
 class PlanResponse(BaseModel):
     status: Literal["success", "failure"] = Field(..., description="Indicates whether the plan creation was successful.")
